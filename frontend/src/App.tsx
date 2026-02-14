@@ -2,12 +2,13 @@ import { useState, useCallback } from 'react'
 import { Plus, MessageSquare, Trash2 } from 'lucide-react'
 import type { Message, ChatSession } from './types'
 import { streamMessage } from './api'
+import { generateId } from './uuid'
 import ChatWindow from './components/ChatWindow'
 import InputBar from './components/InputBar'
 
 function createSession(): ChatSession {
   return {
-    id: crypto.randomUUID(),
+    id: generateId(),
     title: '新对话',
     messages: [],
     sessionId: null,
@@ -30,13 +31,13 @@ export default function App() {
   const handleSend = useCallback(
     async (content: string) => {
       const userMsg: Message = {
-        id: crypto.randomUUID(),
+        id: generateId(),
         role: 'user',
         content,
         timestamp: new Date(),
       }
 
-      const aiMsgId = crypto.randomUUID()
+      const aiMsgId = generateId()
       const aiMsg: Message = {
         id: aiMsgId,
         role: 'assistant',
