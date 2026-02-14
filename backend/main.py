@@ -1,36 +1,24 @@
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
+import json
 import uuid
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langgraph.prebuilt import create_react_agent
-from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage
 
-# ========== Tools ==========
-@tool
-def search(query: str) -> str:
-    """搜索互联网上的信息。当用户询问你不知道的实时信息时使用。"""
-    return f"搜索结果：关于'{query}'的最新信息是..."
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-@tool
-def calculator(expression: str) -> str:
-    """计算数学表达式。当用户需要做数学运算时使用。"""
-    try:
-        result = eval(expression)
-        return f"{expression} = {result}"
-    except Exception as e:
-        return f"计算错误：{e}"
-
-# ========== Agent ==========
-llm = ChatAnthropic(model_name="claude-sonnet-4-20250514")
-agent = create_react_agent(llm, [search, calculator])
+# ========== LLM ==========
+llm = ChatAnthropic(model_name="claude-opus-4-20250514")
 
 # ========== FastAPI ==========
-app = FastAPI(title="Chat Agent API")
+app = FastAPI(title="Chat API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,19 +37,11 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
 
 
-class ToolCallInfo(BaseModel):
-    tool_name: str
-    tool_input: dict
-    tool_output: str
+def sse_event(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-class ChatResponse(BaseModel):
-    reply: str
-    session_id: str
-    tool_calls: list[ToolCallInfo]
-
-
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat")
 async def chat(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
 
@@ -71,36 +51,32 @@ async def chat(req: ChatRequest):
     history = sessions[session_id]
     history.append(HumanMessage(content=req.message))
 
-    result = agent.invoke({"messages": history})
-    messages = result["messages"]
+    async def generate():
+        yield sse_event("session", {"session_id": session_id})
 
-    # Extract tool calls from the message sequence
-    tool_calls_info = []
-    for i, msg in enumerate(messages):
-        if isinstance(msg, AIMessage) and msg.tool_calls:
-            for tc in msg.tool_calls:
-                # Find the corresponding ToolMessage
-                output = ""
-                for later_msg in messages[i + 1:]:
-                    if isinstance(later_msg, ToolMessage) and later_msg.tool_call_id == tc["id"]:
-                        output = later_msg.content
-                        break
-                tool_calls_info.append(ToolCallInfo(
-                    tool_name=tc["name"],
-                    tool_input=tc["args"],
-                    tool_output=str(output),
-                ))
+        full_reply = ""
+        try:
+            async for chunk in llm.astream(history):
+                token = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+                if token:
+                    full_reply += token
+                    yield sse_event("delta", {"content": token})
+        except Exception as e:
+            logger.error(f"LLM error: {e}")
+            error_msg = "抱歉，AI 服务暂时出错了，请稍后再试。"
+            full_reply = error_msg
+            yield sse_event("delta", {"content": error_msg})
 
-    # Get final AI reply
-    ai_reply = messages[-1].content if isinstance(messages[-1], AIMessage) else ""
+        history.append(AIMessage(content=full_reply))
+        yield sse_event("done", {})
 
-    # Update session history
-    sessions[session_id] = messages
-
-    return ChatResponse(
-        reply=ai_reply,
-        session_id=session_id,
-        tool_calls=tool_calls_info,
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
