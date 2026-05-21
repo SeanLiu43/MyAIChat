@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+import os
 import json
 import uuid
 import logging
@@ -8,14 +9,21 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ========== LLM ==========
-llm = ChatAnthropic(model_name="claude-opus-4-20250514")
+# 通过 OpenAI 兼容接口调用国内 LLM，默认智谱 GLM-4-Flash（免费）
+llm = ChatOpenAI(
+    model=os.getenv("LLM_MODEL", "glm-4-flash"),
+    api_key=os.getenv("LLM_API_KEY"),
+    base_url=os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
+    temperature=0.7,
+    streaming=True,
+)
 
 # ========== FastAPI ==========
 app = FastAPI(title="Chat API")
